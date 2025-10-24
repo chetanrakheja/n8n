@@ -1,3 +1,4 @@
+import type { StructuredChunk } from 'n8n-workflow';
 import { z } from 'zod';
 import { Z } from 'zod-class';
 
@@ -166,4 +167,10 @@ export interface ChatHubConversationDto {
 export interface ChatHubConversationResponse {
 	session: ChatHubSessionDto;
 	conversation: ChatHubConversationDto;
+}
+
+export interface EnrichedStructuredChunk extends StructuredChunk {
+	metadata: StructuredChunk['metadata'] & {
+		messageId: ChatMessageId;
+	};
 }

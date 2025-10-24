@@ -29,6 +29,7 @@ export {
 	type ChatHubConversationDto,
 	type ChatHubConversationResponse,
 	type ChatHubConversationsResponse,
+	type EnrichedStructuredChunk,
 } from './chat-hub';
 
 export type { Collaborator } from './push/collaboration';

@@ -11,6 +11,7 @@ import {
 	type ChatSessionId,
 	ChatHubConversationModel,
 	ChatHubMessageStatus,
+	type EnrichedStructuredChunk,
 } from '@n8n/api-types';
 import { Logger } from '@n8n/backend-common';
 import {
@@ -58,7 +59,7 @@ import type {
 import { ChatHubMessageRepository } from './chat-message.repository';
 import { ChatHubSessionRepository } from './chat-session.repository';
 import { getMaxContextWindowTokens } from './context-limits';
-import { captureResponseWrites } from './stream-capturer';
+import { interceptResponseWrites, createStructuredChunkAggregator } from './stream-capturer';
 
 import { ActiveExecutions } from '@/active-executions';
 import { CredentialsFinderService } from '@/credentials/credentials-finder.service';
@@ -557,10 +558,10 @@ export class ChatHubService {
 			);
 		}
 
-		const agents = workflowEntity.nodes.filter((node) => node.type === AGENT_LANGCHAIN_NODE_TYPE);
-		if (agents.length !== 1) {
-			throw new BadRequestError('Workflow must have exactly one AI Agent node');
-		}
+		// const agents = workflowEntity.nodes.filter((node) => node.type === AGENT_LANGCHAIN_NODE_TYPE);
+		// if (agents.length !== 1) {
+		// 	throw new BadRequestError('Workflow must have exactly one AI Agent node');
+		// }
 
 		return {
 			workflowData: {
@@ -819,19 +820,90 @@ export class ChatHubService {
 
 		// Capture the streaming response as it's being generated to save
 		// partial messages in the database when generation gets cancelled.
-		let partialMessage = '';
-		const onChunk = (chunk: string) => {
-			const data = jsonParse<StructuredChunk>(chunk);
-			if (data && data.type === 'item' && typeof data.content === 'string') {
-				partialMessage += data.content;
+		let executionId: string | undefined = undefined;
+
+		const aggregator = createStructuredChunkAggregator(previousMessageId, {
+			onBegin: async (msg) => {
+				await this.saveAIMessage({
+					...msg,
+					sessionId,
+					executionId,
+					selectedModel,
+					retryOfMessageId,
+				});
+			},
+			onItem: (msg, chunk) => {
+				// Not doing anything with the chunks for now
+				console.log(chunk);
+			},
+			onEnd: async (msg) => {
+				await this.messageRepository.updateChatMessage(replyId, {
+					content: msg.content,
+					status: msg.status,
+				});
+				console.log('Finished message', msg);
+			},
+			onError: async (msg, e) => {
+				await this.messageRepository.updateChatMessage(replyId, {
+					content: msg.content,
+					status: msg.status,
+				});
+				console.log('Error in message', msg, e);
+			},
+		});
+
+		const transform = (text: string) => {
+			const trimmed = text.trim();
+			if (!trimmed) return text;
+
+			let chunk: StructuredChunk | null = null;
+			try {
+				chunk = jsonParse<StructuredChunk>(trimmed);
+			} catch {
+				return text;
 			}
+
+			const msg = aggregator.ingest(chunk);
+
+			const enriched: EnrichedStructuredChunk = {
+				...chunk,
+				metadata: { ...chunk.metadata, messageId: msg.id },
+			};
+
+			return JSON.stringify(enriched) + '\n';
 		};
 
-		const stream = captureResponseWrites(res, onChunk);
+		const stream = interceptResponseWrites(res, transform);
+
+		// const stream = captureResponseWrites(res, (text) => {
+		// 	const trimmed = text.trim();
+		// 	if (!trimmed) return;
+
+		// 	const data = jsonParse<StructuredChunk>(trimmed);
+		// 	if (data) aggregator.ingest(data);
+		// });
+
+		stream.on('finish', aggregator.finalizeAll);
+		stream.on('close', aggregator.finalizeAll);
+
+		// let currentMessageid = '';
+
+		// const onChunk = (chunk: string) => {
+		// 	const data = jsonParse<StructuredChunk>(chunk);
+		// 	if (data.type === 'begin') {
+		// 		currentMessageid = uuidv4();
+		// 		messages.push({ id: currentMessageid, content: '' });
+		// 	}
+
+		// 	if (data && data.type === 'item' && typeof data.content === 'string') {
+		// 		messages[messages.length - 1].content += data.content;
+		// 	}
+		// };
+
 		stream.writeHead(200, JSONL_STREAM_HEADERS);
 		stream.flushHeaders();
 
-		const { executionId } = await this.workflowExecutionService.executeManually(
+		const execution = await this.workflowExecutionService.executeManually(
 			{
 				workflowData,
 				triggerToStartFrom,
@@ -841,20 +913,22 @@ export class ChatHubService {
 			true,
 			stream,
 		);
+		executionId = execution.executionId;
+
 		if (!executionId) {
 			throw new OperationalError('There was a problem starting the chat execution.');
 		}
 
-		await this.saveAIMessage({
-			id: replyId,
-			sessionId,
-			executionId,
-			previousMessageId,
-			message: partialMessage,
-			selectedModel,
-			retryOfMessageId,
-			status: 'running',
-		});
+		// await this.saveAIMessage({
+		// 	id: replyId,
+		// 	sessionId,
+		// 	executionId,
+		// 	previousMessageId,
+		// 	message: '',
+		// 	selectedModel,
+		// 	retryOfMessageId,
+		// 	status: 'running',
+		// });
 
 		try {
 			let result: IRun | undefined;
@@ -873,10 +947,10 @@ export class ChatHubService {
 					}
 
 					if (execution.status === 'canceled') {
-						await this.messageRepository.updateChatMessage(replyId, {
-							content: partialMessage || 'Generation cancelled.',
-							status: 'cancelled',
-						});
+						// await this.messageRepository.updateChatMessage(replyId, {
+						// 	content: partialMessage || 'Generation cancelled.',
+						// 	status: 'cancelled',
+						// });
 						return;
 					}
 				}
@@ -904,10 +978,25 @@ export class ChatHubService {
 			// 	throw new OperationalError('No response generated');
 			// }
 
-			await this.messageRepository.updateChatMessage(replyId, {
-				content: partialMessage,
-				status: 'success',
-			});
+			// await this.messageRepository.updateChatMessage(replyId, {
+			// 	content: partialMessage,
+			// 	status: 'success',
+			// });
+
+			// let previous = previousMessageId;
+			// for (const { id, content } of messages) {
+			// 	await this.saveAIMessage({
+			// 		id,
+			// 		sessionId,
+			// 		executionId,
+			// 		previousMessageId: previous,
+			// 		content,
+			// 		selectedModel,
+			// 		retryOfMessageId,
+			// 		status: 'success',
+			// 	});
+			// 	previous = id;
+			// }
 
 			const title = this.getAIOutput(execution, NODE_NAMES.TITLE_GENERATOR_AGENT);
 			if (title) {
@@ -1146,17 +1235,17 @@ export class ChatHubService {
 		sessionId,
 		executionId,
 		previousMessageId,
-		message,
+		content,
 		selectedModel,
 		retryOfMessageId,
 		status,
 	}: {
 		id: ChatMessageId;
 		sessionId: ChatSessionId;
-		executionId: string;
-		previousMessageId: ChatMessageId;
-		message: string;
+		previousMessageId: ChatMessageId | null;
+		content: string;
 		selectedModel: ModelWithCredentials;
+		executionId?: string;
 		retryOfMessageId?: ChatMessageId;
 		editOfMessageId?: ChatMessageId;
 		status?: ChatHubMessageStatus;
@@ -1165,11 +1254,11 @@ export class ChatHubService {
 			id,
 			sessionId,
 			previousMessageId,
-			executionId: parseInt(executionId, 10),
+			executionId: executionId ? parseInt(executionId, 10) : null,
 			type: 'ai',
 			name: 'AI',
 			status,
-			content: message,
+			content,
 			retryOfMessageId,
 			...selectedModel,
 		});
