@@ -293,26 +293,29 @@ function handleEditMessage(message: ChatHubMessageDto) {
 		chatStore.isResponding ||
 		!['human', 'ai'].includes(message.type) ||
 		!selectedModel.value ||
-		!credentialsId.value
+		isMissingSelectedCredential.value
 	) {
 		return;
 	}
 
 	const messageToEdit = message.revisionOfMessageId ?? message.id;
 
+	const credentials = {};
+	if (selectedModel.value.provider !== 'n8n' && credentialsId.value) {
+		Object.assign(credentials, {
+			[PROVIDER_CREDENTIAL_TYPE_MAP[selectedModel.value.provider]]: {
+				id: credentialsId.value,
+				name: '',
+			},
+		});
+	}
+
 	chatStore.editMessage(
 		sessionId.value,
 		messageToEdit,
 		message.content,
 		selectedModel.value,
-		selectedModel.value.provider === 'n8n'
-			? {}
-			: {
-					[PROVIDER_CREDENTIAL_TYPE_MAP[selectedModel.value.provider]]: {
-						id: credentialsId.value,
-						name: '',
-					},
-				},
+		credentials,
 	);
 	editingMessageId.value = undefined;
 }
@@ -322,26 +325,24 @@ function handleRegenerateMessage(message: ChatHubMessageDto) {
 		chatStore.isResponding ||
 		message.type !== 'ai' ||
 		!selectedModel.value ||
-		!credentialsId.value
+		isMissingSelectedCredential.value
 	) {
 		return;
 	}
 
 	const messageToRetry = message.retryOfMessageId ?? message.id;
 
-	chatStore.regenerateMessage(
-		sessionId.value,
-		messageToRetry,
-		selectedModel.value,
-		selectedModel.value.provider === 'n8n'
-			? {}
-			: {
-					[PROVIDER_CREDENTIAL_TYPE_MAP[selectedModel.value.provider]]: {
-						id: credentialsId.value,
-						name: '',
-					},
-				},
-	);
+	const credentials = {};
+	if (selectedModel.value.provider !== 'n8n' && credentialsId.value) {
+		Object.assign(credentials, {
+			[PROVIDER_CREDENTIAL_TYPE_MAP[selectedModel.value.provider]]: {
+				id: credentialsId.value,
+				name: '',
+			},
+		});
+	}
+
+	chatStore.regenerateMessage(sessionId.value, messageToRetry, selectedModel.value, credentials);
 }
 
 function handleSelectModel(selection: ChatHubConversationModel) {

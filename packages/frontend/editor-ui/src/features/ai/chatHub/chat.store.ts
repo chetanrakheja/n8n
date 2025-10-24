@@ -23,9 +23,9 @@ import type {
 	ChatMessageId,
 	ChatSessionId,
 	ChatHubMessageDto,
+	EnrichedStructuredChunk,
 } from '@n8n/api-types';
 import type { CredentialsMap, ChatMessage, ChatConversation } from './chat.types';
-import type { StructuredChunk } from 'n8n-workflow';
 import { retry } from '@n8n/utils/retry';
 
 export const useChatStore = defineStore(CHAT_STORE, () => {
@@ -244,12 +244,10 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 	}
 
 	function onBeginMessage(
-		sessionId: string,
-		messageId: string,
-		replyToMessageId: string,
-		retryOfMessageId: string | null,
-		_nodeId: string,
-		_runIndex?: number,
+		sessionId: ChatSessionId,
+		messageId: ChatMessageId,
+		previousMessageId: ChatMessageId | null,
+		retryOfMessageId: ChatMessageId | null,
 	) {
 		streamingMessageId.value = messageId;
 
@@ -266,7 +264,7 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 			status: 'success',
 			createdAt: new Date().toISOString(),
 			updatedAt: new Date().toISOString(),
-			previousMessageId: replyToMessageId,
+			previousMessageId,
 			retryOfMessageId,
 			revisionOfMessageId: null,
 			responses: [],
@@ -274,13 +272,7 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 		});
 	}
 
-	function onChunk(
-		sessionId: string,
-		messageId: string,
-		chunk: string,
-		_nodeId?: string,
-		_runIndex?: number,
-	) {
+	function onChunk(sessionId: string, messageId: string, chunk: string) {
 		appendMessage(sessionId, messageId, chunk);
 	}
 
@@ -288,37 +280,26 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 		streamingMessageId.value = undefined;
 	}
 
-	function onStreamMessage(
-		sessionId: string,
-		message: StructuredChunk,
-		messageId: string,
-		replyToMessageId: string,
-		retryOfMessageId: string | null,
-	) {
-		const nodeId = message.metadata?.nodeId || 'unknown';
-		const runIndex = message.metadata?.runIndex;
+	function onStreamMessage(sessionId: string, message: EnrichedStructuredChunk) {
+		const { messageId, previousMessageId, retryOfMessageId } = message.metadata;
 
 		switch (message.type) {
 			case 'begin':
-				onBeginMessage(sessionId, messageId, replyToMessageId, retryOfMessageId, nodeId, runIndex);
+				onBeginMessage(sessionId, messageId, previousMessageId, retryOfMessageId);
 				break;
 			case 'item':
-				onChunk(sessionId, messageId, message.content ?? '', nodeId, runIndex);
+				onChunk(sessionId, messageId, message.content ?? '');
 				break;
 			case 'end':
 				onEndMessage();
 				break;
 			case 'error':
-				if (streamingMessageId.value === messageId) {
-					onChunk(
-						sessionId,
-						messageId,
-						`Error: ${message.content ?? 'Unknown error'}`,
-						nodeId,
-						runIndex,
-					);
-					onEndMessage();
+				if (streamingMessageId.value !== messageId) {
+					onBeginMessage(sessionId, messageId, previousMessageId, retryOfMessageId);
 				}
+
+				onChunk(sessionId, messageId, message.content ?? 'Unknown error');
+				onEndMessage();
 				break;
 		}
 	}
@@ -353,7 +334,6 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 		credentials: ChatHubSendMessageRequest['credentials'],
 	) {
 		const messageId = uuidv4();
-		const replyId = uuidv4();
 		const conversation = ensureConversation(sessionId);
 		const previousMessageId = conversation.activeMessageChain.length
 			? conversation.activeMessageChain[conversation.activeMessageChain.length - 1]
@@ -385,12 +365,11 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 				model,
 				messageId,
 				sessionId,
-				replyId,
 				message,
 				credentials,
 				previousMessageId,
 			},
-			(chunk: StructuredChunk) => onStreamMessage(sessionId, chunk, replyId, messageId, null),
+			(chunk: EnrichedStructuredChunk) => onStreamMessage(sessionId, chunk),
 			async () => await onStreamDone(sessionId),
 			onStreamError,
 		);
@@ -404,7 +383,6 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 		credentials: ChatHubSendMessageRequest['credentials'],
 	) {
 		const messageId = uuidv4();
-		const replyId = uuidv4();
 
 		const conversation = ensureConversation(sessionId);
 		const message = conversation.messages[editId];
@@ -441,11 +419,10 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 			{
 				model,
 				messageId,
-				replyId,
 				message: content,
 				credentials,
 			},
-			(chunk: StructuredChunk) => onStreamMessage(sessionId, chunk, replyId, messageId, null),
+			(chunk: EnrichedStructuredChunk) => onStreamMessage(sessionId, chunk),
 			async () => await onStreamDone(sessionId),
 			onStreamError,
 		);
@@ -457,7 +434,6 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 		model: ChatHubConversationModel,
 		credentials: ChatHubSendMessageRequest['credentials'],
 	) {
-		const replyId = uuidv4();
 		const conversation = ensureConversation(sessionId);
 		const previousMessageId = conversation.messages[retryId]?.previousMessageId ?? null;
 
@@ -471,11 +447,9 @@ export const useChatStore = defineStore(CHAT_STORE, () => {
 			retryId,
 			{
 				model,
-				replyId,
 				credentials,
 			},
-			(chunk: StructuredChunk) =>
-				onStreamMessage(sessionId, chunk, replyId, previousMessageId, retryId),
+			(chunk: EnrichedStructuredChunk) => onStreamMessage(sessionId, chunk),
 			async () => await onStreamDone(sessionId),
 			onStreamError,
 		);

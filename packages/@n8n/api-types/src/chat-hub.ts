@@ -80,7 +80,6 @@ export type ChatModelsResponse = Record<
 export class ChatHubSendMessageRequest extends Z.class({
 	messageId: z.string().uuid(),
 	sessionId: z.string().uuid(),
-	replyId: z.string().uuid(),
 	message: z.string(),
 	model: chatHubConversationModelSchema,
 	previousMessageId: z.string().uuid().nullable(),
@@ -93,7 +92,6 @@ export class ChatHubSendMessageRequest extends Z.class({
 }) {}
 
 export class ChatHubRegenerateMessageRequest extends Z.class({
-	replyId: z.string().uuid(),
 	model: chatHubConversationModelSchema,
 	credentials: z.record(
 		z.object({
@@ -106,7 +104,6 @@ export class ChatHubRegenerateMessageRequest extends Z.class({
 export class ChatHubEditMessageRequest extends Z.class({
 	message: z.string(),
 	messageId: z.string().uuid(),
-	replyId: z.string().uuid(),
 	model: chatHubConversationModelSchema,
 	credentials: z.record(
 		z.object({
@@ -172,5 +169,7 @@ export interface ChatHubConversationResponse {
 export interface EnrichedStructuredChunk extends StructuredChunk {
 	metadata: StructuredChunk['metadata'] & {
 		messageId: ChatMessageId;
+		previousMessageId: ChatMessageId | null;
+		retryOfMessageId: ChatMessageId | null;
 	};
 }

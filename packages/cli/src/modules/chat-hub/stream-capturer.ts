@@ -58,7 +58,7 @@ const keyOf = (m: StructuredChunk['metadata']): MessageKey =>
 
 export type AggregatedMessage = Pick<
 	ChatHubMessage,
-	'id' | 'previousMessageId' | 'content' | 'createdAt' | 'updatedAt' | 'status'
+	'id' | 'previousMessageId' | 'retryOfMessageId' | 'content' | 'createdAt' | 'updatedAt' | 'status'
 >;
 
 type Handlers = {
@@ -70,6 +70,7 @@ type Handlers = {
 
 export function createStructuredChunkAggregator(
 	initialPreviousMessageId: ChatMessageId,
+	retryOfMessageId: ChatMessageId | null,
 	handlers: Handlers = {},
 ) {
 	const { onBegin, onItem, onEnd, onError } = handlers;
@@ -83,6 +84,10 @@ export function createStructuredChunkAggregator(
 		const message: AggregatedMessage = {
 			id: uuidv4(),
 			previousMessageId,
+			retryOfMessageId:
+				retryOfMessageId && previousMessageId === initialPreviousMessageId
+					? retryOfMessageId
+					: null,
 			content: '',
 			createdAt: new Date(),
 			updatedAt: new Date(),
@@ -136,8 +141,11 @@ export function createStructuredChunkAggregator(
 		const message = ensureMessage(key);
 		message.status = 'error';
 		message.updatedAt = new Date();
+		message.content =
+			(message.content ? message.content + '\n\n' : '') +
+			(typeof content === 'string' ? content : 'Error: Unknown error occurred');
 		activeByKey.delete(key);
-		onError?.(message, typeof chunk.content === 'string' ? chunk.content : undefined);
+		onError?.(message, content);
 		return message;
 	};
 
